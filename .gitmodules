@@ -1,0 +1,3 @@
+[submodule "bitlocker-spi-toolkit"]
+	path = bitlocker-spi-toolkit
+	url = https://github.com/WithSecureLabs/bitlocker-spi-toolkit.git

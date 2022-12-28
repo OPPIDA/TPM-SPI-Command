@@ -1,0 +1,13 @@
+{
+  "name": "TPM SPI Command",
+  "apiVersion": "1.0.0",
+  "author": "6f70",
+  "version": "0.0.1",
+  "description": "",
+  "extensions": {
+    "TPM SPI Command": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "CommandHla.CommandHla"
+    }
+  }
+}
