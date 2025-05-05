@@ -14,7 +14,8 @@ sys.path.insert(1,
     )
 )
 from HighLevelAnalyzer import Operation, Hla as TransactionHla
-from PacketParser import PacketParser
+from PacketParser import PacketParser as PacketParser20
+from PacketParser12 import PacketParser as PacketParser12
 
 FITEST_SEED         = 0x1337
 FITEST_PROBABILITY  = 0.01
@@ -28,6 +29,10 @@ REGION              = 0xd4
 REG_STS             = 0x000018
 REG_FIFO            = 0x000024
 NUM_LOCALITY        = 5
+
+class TPMVersion(Enum):
+    TPM20 = 0
+    TPM12 = 1
 
 class Offset(ctypes.Union):
     class Bits(ctypes.Structure):
@@ -83,26 +88,31 @@ class FifoData:
     data: bytearray()
     is_response: bool
     locality: int
+    tpm_version: TPMVersion
 
-    def __init__(self, is_response, locality):
+    def __init__(self, is_response, locality, tpm_version):
         self.start_time = None
         self.end_time = None
         self.data = bytearray()
         self.is_response = is_response
         self.locality = locality
+        if tpm_version == TPMVersion.TPM20:
+            self.parser = PacketParser20
+        else:
+            self.parser = PacketParser12
 
     def is_empty(self):
         return len(self.data) == 0
 
-    def add_byte(self, start_time, end_time, byte):
+    def add_bytes(self, start_time, end_time, bytes):
         if self.start_time is None:
             self.start_time = start_time
         self.end_time = end_time
-        self.data += bytearray((byte,))
+        self.data += bytearray(bytes)
 
     def build_frame(self):
         frame_type = 'response' if self.is_response else 'command'
-        parser = PacketParser(self.data, self.is_response)
+        parser = self.parser(self.data, self.is_response)
         return AnalyzerFrame(
             frame_type,
             self.start_time,
@@ -119,6 +129,10 @@ class FifoData:
 class CommandAnalyzer:
     state = [CommandState.IDLE] * NUM_LOCALITY
     fifo = [None] * NUM_LOCALITY
+    tpm_version = TPMVersion
+
+    def __init__(self, tpm_version):
+        self.tpm_version = tpm_version
 
     def parse_transaction(self, start_time, end_time, addr, data, is_read):
         offset = Offset(addr)
@@ -154,7 +168,7 @@ class CommandAnalyzer:
             CommandState.SENDING_RESPONSE:  self._state_sending_response
         }
         state = self.state[locality]
-        status = TPM_STS_x(data)
+        status = TPM_STS_x(int.from_bytes(data, 'little'))
         return state_machine[state](start_time, end_time, status, is_read, locality)
 
     def _access_fifo(self, start_time, end_time, data, is_read, locality):
@@ -173,21 +187,14 @@ class CommandAnalyzer:
                 end_time,
                 {'Message': f'Unexpected FIFO direction: {"read" if is_read else "write"}'}
             )
-        elif data not in range(0x100):
-            return AnalyzerFrame(
-                'error',
-                start_time,
-                end_time,
-                {'Message': f'FIFO data is out of range: {data:x}'}
-            )
 
-        self.fifo[locality].add_byte(start_time, end_time, data)
+        self.fifo[locality].add_bytes(start_time, end_time, data)
         return None
 
     def _state_idle(self, start_time, end_time, status, is_read, locality):
         if not is_read and status.b.commandReady:
             self.state[locality] = CommandState.SENDING_COMMAND
-            self.fifo[locality] = FifoData(False, locality)
+            self.fifo[locality] = FifoData(False, locality, self.tpm_version)
 
     def _state_sending_command(self, start_time, end_time, status, is_read, locality):
         if not is_read and status.b.tpmGo:
@@ -207,7 +214,7 @@ class CommandAnalyzer:
     def _state_executing_command(self, start_time, end_time, status, is_read, locality):
         if is_read and status.b.dataAvail:
             self.state[locality] = CommandState.SENDING_RESPONSE
-            self.fifo[locality] = FifoData(True, locality)
+            self.fifo[locality] = FifoData(True, locality, self.tpm_version)
 
     def _state_sending_response(self, start_time, end_time, status, is_read, locality):
         if is_read and not status.b.dataAvail:
@@ -227,6 +234,7 @@ class CommandAnalyzer:
 class CommandHla(TransactionHla):
     addr_filter_setting = ""
     operation_setting = "Both"
+    tpm_choice = ChoicesSetting(['2.0', '1.2'], label="TPM version")
     fitest_enabled = ChoicesSetting(['', 'Enabled'], label="DEBUG: Corrupt input randomly")
 
     result_types = {
@@ -244,7 +252,12 @@ class CommandHla(TransactionHla):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.command_analyzer = CommandAnalyzer()
+        if self.tpm_choice == '1.2':
+            tpm_version = TPMVersion.TPM12
+        else:
+            tpm_version = TPMVersion.TPM20
+
+        self.command_analyzer = CommandAnalyzer(tpm_version)
         self.prng = Random(FITEST_SEED)
 
     def decode(self, *args, **kwargs):
@@ -261,7 +274,7 @@ class CommandHla(TransactionHla):
         start_time = txn.start_time
         end_time = txn.end_time
         addr = int.from_bytes(txn.address, 'big')
-        data = int.from_bytes(txn.data, 'little')
+        data = txn.data
         is_read = txn.operation == Operation.READ
 
         if self.fitest_enabled:
