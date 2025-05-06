@@ -4,6 +4,22 @@ A Saleae Logic 2 High-Level Analyzer (HLA) extension for parsing TPM SPI command
 
 Supports TPM 1.2 and TPM 2.0.
 
+After CSV export from Logic 2, one may export the command/response stream with:
+
+```python
+import numpy as np
+import pandas as pd
+
+df = pd.read_csv('...')
+
+df = df[df.name == 'TPM SPI Command']
+
+# Treat undefined body as no body
+df = df.replace({'Body': np.nan}, '')
+
+hex_stream = ''.join(df[['Header', 'Body']].values.flatten('C'))
+```
+
 ## Screenshot
 
 ![Screenshot](./screenshot.png)
